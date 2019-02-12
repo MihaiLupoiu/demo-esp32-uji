@@ -16,6 +16,10 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 
+#include "lwip/netdb.h"
+#include "lwip/err.h"
+#include "lwip/api.h"
+
 /* Can run 'make menuconfig' to choose the GPIO to blink,
    or you can edit the following line and set a number here.
 */
@@ -38,6 +42,8 @@ const int CLIENT_CONNECTED_BIT = BIT0;
 const int CLIENT_DISCONNECTED_BIT = BIT1;
 const int AP_STARTED_BIT = BIT2;
 const int ACTIVATE_GPIO_BIT = BIT3;
+
+const static char http_html_hdr[] = "HTTP/1.1 200 OK\nContent-type: text/html\n\n Hola desde ESP32! :) \n";
 
 static esp_err_t event_handler(void *ctx, system_event_t *event) {
 	switch (event->event_id) {
@@ -178,6 +184,85 @@ void sta_info(void *pvParam) {
 	}
 }
 
+static void http_server_netconn_serve(struct netconn *conn) {
+
+	struct netbuf *inbuf;
+	char *buf;
+	u16_t buflen;
+	err_t err;
+
+	err = netconn_recv(conn, &inbuf);
+
+	if (err == ERR_OK) {
+
+		netbuf_data(inbuf, (void **) &buf, &buflen);
+
+		// extract the first line, with the request
+		char *first_line = strtok(buf, "\n");
+
+		if (first_line) {
+
+			// default page
+			if (strstr(first_line, "GET / ")) {
+				netconn_write(conn, http_html_hdr, sizeof(http_html_hdr) - 1, NETCONN_NOCOPY);
+
+				wifi_sta_list_t wifi_sta_list;
+				tcpip_adapter_sta_list_t adapter_sta_list;
+
+				memset(&wifi_sta_list, 0, sizeof(wifi_sta_list));
+				memset(&adapter_sta_list, 0, sizeof(adapter_sta_list));
+
+				ESP_ERROR_CHECK(esp_wifi_ap_get_sta_list(&wifi_sta_list));
+				ESP_ERROR_CHECK(tcpip_adapter_get_sta_list(&wifi_sta_list, &adapter_sta_list));
+
+				char buffer[150];
+				netconn_write(conn, "<br>", sizeof("<br>") - 1, NETCONN_NOCOPY);
+
+				for (int i = 0; i < adapter_sta_list.num; i++) {
+					memset(&buffer, 0, sizeof(buffer));
+					tcpip_adapter_sta_info_t station = adapter_sta_list.sta[i];
+					sprintf(buffer, "%d - mac: %.2x:%.2x:%.2x:%.2x:%.2x:%.2x - IP: %s\n", i + 1, station.mac[0],
+					        station.mac[1], station.mac[2], station.mac[3], station.mac[4], station.mac[5],
+					        ip4addr_ntoa(&(station.ip)));
+
+					netconn_write(conn, buffer, sizeof(buffer) - 1, NETCONN_NOCOPY);
+					netconn_write(conn, "<br>", sizeof("<br>") - 1, NETCONN_NOCOPY);
+				}
+
+			} else if (!strstr(first_line, "GET /favicon.ico "))
+				printf("Unkown request: %s\n", first_line);
+
+		} else
+			printf("Unkown request\n");
+	}
+
+	// close the connection and free the buffer
+	netconn_close(conn);
+	netbuf_delete(inbuf);
+}
+
+static void http_server(void *pvParameters) {
+
+	struct netconn *conn, *newconn;
+	err_t err;
+	conn = netconn_new(NETCONN_TCP);
+	netconn_bind(conn, NULL, 80);
+	netconn_listen(conn);
+	ESP_LOGI("HTTP Server", "listening...");
+	do {
+		err = netconn_accept(conn, &newconn);
+		ESP_LOGI("HTTP Server", "New client connected");
+
+		if (err == ERR_OK) {
+			http_server_netconn_serve(newconn);
+			netconn_delete(newconn);
+		}
+		vTaskDelay(1); // allows task to be pre-empted
+	} while (err == ERR_OK);
+	netconn_close(conn);
+	netconn_delete(conn);
+}
+
 void app_main() {
 	printf("Hello world!\n");
 
@@ -197,5 +282,6 @@ void app_main() {
 
 	xTaskCreate(&sta_info, "print_sta_info", 2048, NULL, 5, NULL);
 
-	// xTaskCreate(&blink_task, "blink_task", configMINIMAL_STACK_SIZE, NULL, 5, NULL);
+	// start the HTTP Server task
+	xTaskCreate(&http_server, "http_server", 2048, NULL, 5, NULL);
 }
