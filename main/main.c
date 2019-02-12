@@ -22,7 +22,7 @@
 
 #define BLINK_GPIO_1 32
 #define BLINK_GPIO_2 33
-#define BLINK_TIME 500
+#define BLINK_TIME 300
 
 // WIFI configuration
 #define AP_SSID "ESP_32"
