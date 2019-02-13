@@ -39,7 +39,8 @@
         "uart_9bit.h": "c",
         "mdb_bus_comm.h": "c",
         "mdb_internal.h": "c",
-        "stdint.h": "c"
+        "stdint.h": "c",
+        "esp_wifi.h": "c"
     },
     "C_Cpp.intelliSenseEngineFallback": "Disabled"
 }
