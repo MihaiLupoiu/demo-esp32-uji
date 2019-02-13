@@ -20,6 +20,8 @@
 #include "lwip/err.h"
 #include "lwip/api.h"
 
+#include "led_strip/led_strip.h"
+
 /* Can run 'make menuconfig' to choose the GPIO to blink,
    or you can edit the following line and set a number here.
 */
@@ -38,8 +40,15 @@
 
 static EventGroupHandle_t wifi_event_group;
 
+static SemaphoreHandle_t mutex = NULL;
 static uint64_t red_counter = 0;
 static uint64_t blue_counter = 0;
+
+#define LED_STRIP_LENGTH 22U
+static struct led_color_t led_strip_buf_1[LED_STRIP_LENGTH];
+static struct led_color_t led_strip_buf_2[LED_STRIP_LENGTH];
+
+#define LED_STRIP_RMT_INTR_NUM 19
 
 const int CLIENT_CONNECTED_BIT = BIT0;
 const int CLIENT_DISCONNECTED_BIT = BIT1;
@@ -106,16 +115,6 @@ void set_gpio_configuration(void) {
 static void start_wifi_ap_mode(void) {
 	esp_log_level_set("wifi", ESP_LOG_NONE); // disable wifi driver logging
 
-	// Initialize NVS
-	// Used to store configuration parameters in flash
-	esp_err_t err = nvs_flash_init();
-	if (err == ESP_ERR_NVS_NO_FREE_PAGES) {
-		// NVS partition was truncated and needs to be erased
-		// Retry nvs_flash_init
-		ESP_ERROR_CHECK(nvs_flash_erase());
-		err = nvs_flash_init();
-	}
-
 	ESP_ERROR_CHECK(esp_event_loop_init(event_handler, NULL));
 	wifi_event_group = xEventGroupCreate();
 
@@ -166,6 +165,9 @@ void printStationList() {
 }
 
 void sta_info(void *pvParam) {
+
+	set_gpio_configuration();
+
 	ESP_LOGI("Connection_Status_Info", "print_sta_info task started \n");
 	while (1) {
 		EventBits_t staBits = xEventGroupWaitBits(wifi_event_group, CLIENT_CONNECTED_BIT | CLIENT_DISCONNECTED_BIT,
@@ -213,6 +215,21 @@ static void http_server_netconn_serve(struct netconn *conn) {
 			if (strstr(first_line, "GET / ")) {
 				netconn_write(conn, http_html_hdr, sizeof(http_html_hdr) - 1, NETCONN_NOCOPY);
 
+				char *buffer = NULL;
+
+				xSemaphoreTake(mutex, portMAX_DELAY);
+				uint64_t red = red_counter;
+				uint64_t blue = blue_counter;
+				xSemaphoreGive(mutex);
+
+				uint64_t tot = (red + blue);
+
+				asprintf(&buffer, "<br> Score: <br> RED: %llu = %f <br> BLUE: %llu = %f <br> <br> Players:  <br> <br> ",
+				         red, (float) red / tot, blue, (float) blue / tot);
+
+				netconn_write(conn, buffer, strlen(buffer) - 1, NETCONN_COPY);
+				free(buffer);
+
 				wifi_sta_list_t wifi_sta_list;
 				tcpip_adapter_sta_list_t adapter_sta_list;
 
@@ -222,7 +239,6 @@ static void http_server_netconn_serve(struct netconn *conn) {
 				ESP_ERROR_CHECK(esp_wifi_ap_get_sta_list(&wifi_sta_list));
 				ESP_ERROR_CHECK(tcpip_adapter_get_sta_list(&wifi_sta_list, &adapter_sta_list));
 
-				char *buffer;
 				static char br[] = "<br>";
 				netconn_write(conn, br, sizeof(br) - 1, NETCONN_NOCOPY);
 
@@ -242,16 +258,15 @@ static void http_server_netconn_serve(struct netconn *conn) {
 				netconn_write(conn, index_html_start, index_html_end - index_html_start, NETCONN_NOCOPY);
 
 			} else if (strstr(first_line, "POST /red ")) {
+				xSemaphoreTake(mutex, portMAX_DELAY);
 				red_counter++;
+				xSemaphoreGive(mutex);
 				ESP_LOGI("HTTP Server", "Got red ...");
-				// netconn_write(conn, http_html_hdr_ok, sizeof(http_html_hdr_ok) - 1, NETCONN_COPY);
-
-				// launch task to change leds
 			} else if (strstr(first_line, "POST /blue ")) {
+				xSemaphoreTake(mutex, portMAX_DELAY);
 				blue_counter++;
+				xSemaphoreGive(mutex);
 				ESP_LOGI("HTTP Server", "Got blue ...");
-				// netconn_write(conn, http_html_hdr_ok, sizeof(http_html_hdr_ok) - 1, NETCONN_COPY);
-				// launch task to change leds
 			} else if (!strstr(first_line, "GET /favicon.ico "))
 				printf("Unkown request: %s\n", first_line);
 
@@ -287,8 +302,6 @@ static void http_server(void *pvParameters) {
 }
 
 void app_main() {
-	printf("Hello world!\n");
-
 	/* Print chip information */
 	esp_chip_info_t chip_info;
 	esp_chip_info(&chip_info);
@@ -298,13 +311,77 @@ void app_main() {
 	printf("%dMB %s flash\n", spi_flash_get_chip_size() / (1024 * 1024),
 	       (chip_info.features & CHIP_FEATURE_EMB_FLASH) ? "embedded" : "external");
 
-	set_gpio_configuration();
+	mutex = xSemaphoreCreateMutex();
+
+	if (mutex == NULL)
+		ESP_LOGE("Mutex", "Not created ...");
+
+	// Initialize NVS
+	// Used to store configuration parameters in flash
+	esp_err_t err = nvs_flash_init();
+	if (err == ESP_ERR_NVS_NO_FREE_PAGES) {
+		// NVS partition was truncated and needs to be erased
+		// Retry nvs_flash_init
+		ESP_ERROR_CHECK(nvs_flash_erase());
+		err = nvs_flash_init();
+	}
 
 	start_dhcp_server();
 	start_wifi_ap_mode();
 
-	xTaskCreate(&sta_info, "print_sta_info", 2048, NULL, 5, NULL);
+	// Get MAC and IP and activate GPIOs
+	// xTaskCreate(&sta_info, "print_sta_info", 2048, NULL, 5, NULL);
 
 	// start the HTTP Server task
-	xTaskCreate(&http_server, "http_server", 2048, NULL, 5, NULL);
+	xTaskCreate(&http_server, "http_server", 4096, NULL, 10, NULL);
+
+	// Display Score Leds
+	struct led_strip_t led_strip = {.rgb_led_type = RGB_LED_TYPE_WS2812,
+	                                .rmt_channel = RMT_CHANNEL_1,
+	                                .rmt_interrupt_num = LED_STRIP_RMT_INTR_NUM,
+	                                .gpio = GPIO_NUM_22,
+	                                .led_strip_buf_1 = led_strip_buf_1,
+	                                .led_strip_buf_2 = led_strip_buf_2,
+	                                .led_strip_length = LED_STRIP_LENGTH};
+	led_strip.access_semaphore = xSemaphoreCreateMutex();
+
+	bool led_init_ok = led_strip_init(&led_strip);
+	assert(led_init_ok);
+
+	struct led_color_t led_red_color = {
+	.red = 5, .green = 0, .blue = 0,
+	};
+
+	struct led_color_t led_blue_color = {
+	.red = 0, .green = 0, .blue = 5,
+	};
+
+	ESP_LOGI("LEDS", "started ...");
+
+	while (true) {
+
+		xSemaphoreTake(mutex, portMAX_DELAY);
+		uint64_t red = red_counter;
+		uint64_t blue = blue_counter;
+		xSemaphoreGive(mutex);
+
+		float tot = red + blue;
+		int split_point = 0;
+		if (tot != 0)
+			split_point = red / tot * LED_STRIP_LENGTH + 0.5; // To round up
+		else
+			split_point = LED_STRIP_LENGTH / 2;
+
+		for (uint32_t index = 0; index < LED_STRIP_LENGTH; index++) {
+			if (index < split_point) {
+				led_strip_set_pixel_color(&led_strip, index, &led_red_color);
+
+			} else {
+				led_strip_set_pixel_color(&led_strip, index, &led_blue_color);
+			}
+		}
+
+		led_strip_show(&led_strip);
+		vTaskDelay(100 / portTICK_RATE_MS);
+	}
 }
