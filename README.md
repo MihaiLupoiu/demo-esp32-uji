@@ -1,3 +1,3 @@
-# Hello World Example
+# demo-esp32-uji
+Demo del uso de ESP32 IDF.
 
-Starts a FreeRTOS task to print "Hello World"
