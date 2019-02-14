@@ -56,7 +56,7 @@ const int AP_STARTED_BIT = BIT2;
 const int ACTIVATE_GPIO_BIT = BIT3;
 
 const static char http_html_hdr[] = "HTTP/1.1 200 OK\nContent-type: text/html\n\n Hola desde ESP32! :) \n";
-const static char http_html_hdr_ok[] = "HTTP/1.1 200 OK\n\n\n";
+const static char http_html_hdr_ok[] = "HTTP/1.1 200 OK\nContent-type: text/html\n\n";
 
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[] asm("_binary_index_html_end");
@@ -224,8 +224,8 @@ static void http_server_netconn_serve(struct netconn *conn) {
 
 				uint64_t tot = (red + blue);
 
-				asprintf(&buffer, "<br> Score: <br> RED: %llu = %f <br> BLUE: %llu = %f <br> <br> Players:  <br> <br> ",
-				         red, (float) red / tot, blue, (float) blue / tot);
+				asprintf(&buffer, "<br> Score: <br> RED: %llu = %f <br> BLUE: %llu = %f <br> <br> Players: <br> ", red,
+				         (float) red / tot, blue, (float) blue / tot);
 
 				netconn_write(conn, buffer, strlen(buffer) - 1, NETCONN_COPY);
 				free(buffer);
@@ -255,8 +255,8 @@ static void http_server_netconn_serve(struct netconn *conn) {
 				}
 
 			} else if (strstr(first_line, "GET /bear ")) {
+				netconn_write(conn, http_html_hdr_ok, sizeof(http_html_hdr_ok), NETCONN_NOCOPY);
 				netconn_write(conn, index_html_start, index_html_end - index_html_start, NETCONN_NOCOPY);
-
 			} else if (strstr(first_line, "POST /red ")) {
 				xSemaphoreTake(mutex, portMAX_DELAY);
 				red_counter++;
