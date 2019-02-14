@@ -41,8 +41,9 @@
 static EventGroupHandle_t wifi_event_group;
 
 static SemaphoreHandle_t mutex = NULL;
-static uint64_t red_counter = 0;
-static uint64_t blue_counter = 0;
+static uint64_t total_red_counter = 0;
+static uint64_t total_blue_counter = 0;
+static uint8_t led_counter = 11;
 
 #define LED_STRIP_LENGTH 22U
 static struct led_color_t led_strip_buf_1[LED_STRIP_LENGTH];
@@ -218,8 +219,8 @@ static void http_server_netconn_serve(struct netconn *conn) {
 				char *buffer = NULL;
 
 				xSemaphoreTake(mutex, portMAX_DELAY);
-				uint64_t red = red_counter;
-				uint64_t blue = blue_counter;
+				uint64_t red = total_red_counter;
+				uint64_t blue = total_blue_counter;
 				xSemaphoreGive(mutex);
 
 				uint64_t tot = (red + blue);
@@ -259,12 +260,18 @@ static void http_server_netconn_serve(struct netconn *conn) {
 				netconn_write(conn, index_html_start, index_html_end - index_html_start, NETCONN_NOCOPY);
 			} else if (strstr(first_line, "POST /red ")) {
 				xSemaphoreTake(mutex, portMAX_DELAY);
-				red_counter++;
+				total_red_counter++;
+				if (led_counter < LED_STRIP_LENGTH) {
+					led_counter++;
+				}
 				xSemaphoreGive(mutex);
 				ESP_LOGI("HTTP Server", "Got red ...");
 			} else if (strstr(first_line, "POST /blue ")) {
 				xSemaphoreTake(mutex, portMAX_DELAY);
-				blue_counter++;
+				total_blue_counter++;
+				if (led_counter > 0) {
+					led_counter--;
+				}
 				xSemaphoreGive(mutex);
 				ESP_LOGI("HTTP Server", "Got blue ...");
 			} else if (!strstr(first_line, "GET /favicon.ico "))
@@ -361,16 +368,8 @@ void app_main() {
 	while (true) {
 
 		xSemaphoreTake(mutex, portMAX_DELAY);
-		uint64_t red = red_counter;
-		uint64_t blue = blue_counter;
+		int split_point = led_counter;
 		xSemaphoreGive(mutex);
-
-		float tot = red + blue;
-		int split_point = 0;
-		if (tot != 0)
-			split_point = red / tot * LED_STRIP_LENGTH + 0.5; // To round up
-		else
-			split_point = LED_STRIP_LENGTH / 2;
 
 		for (uint32_t index = 0; index < LED_STRIP_LENGTH; index++) {
 			if (index < split_point) {
@@ -382,6 +381,6 @@ void app_main() {
 		}
 
 		led_strip_show(&led_strip);
-		vTaskDelay(100 / portTICK_RATE_MS);
+		vTaskDelay(30 / portTICK_RATE_MS);
 	}
 }
